@@ -23,6 +23,28 @@ namespace hex::ui {
 
     /* Data Visualizer */
 
+    // Returns the number of bytes that a UTF-8 lead byte's character
+    // occupies. Returns 0 if `leadByte` is not a valid lead byte.
+    static size_t utf8SequenceLengthFromLeadByte(u8 leadByte) {
+        if ((leadByte & 0x80) == 0x00)
+            return 1;
+        else if ((leadByte & 0xE0) == 0xC0)
+            return 2;
+        else if ((leadByte & 0xF0) == 0xE0)
+            return 3;
+        else if ((leadByte & 0xF8) == 0xF0)
+            return 4;
+        else
+            return 0;
+    }
+
+    // Whether `text` is exactly one character: something that fits in a
+    // single cell. An encoding table spells a byte with no character of
+    // its own out as a name, like "NUL" or "CR".
+    static bool isSingleCharacter(std::string_view text) {
+        return !text.empty() && utf8SequenceLengthFromLeadByte(u8(text.front())) == text.size();
+    }
+
     class DataVisualizerAscii : public hex::ContentRegistry::HexEditor::DataVisualizer {
     public:
         DataVisualizerAscii() : DataVisualizer("ASCII"_untranslated, 1, 1) { }
@@ -33,10 +55,26 @@ namespace hex::ui {
 
             if (size == 1) {
                 const auto c = static_cast<unsigned char>(data[0]);
+
+                // A byte with no character of its own - a control code, or any byte the codepage
+                // does not map - falls through to the control pictures and Extended ASCII table
+                // below.
+                if (m_codepage != nullptr) {
+                    if (const auto text = (*m_codepage)[c]; !text.empty()) {
+                        ImGui::TextUnformatted(text.data(), text.data() + text.size());
+                        return;
+                    }
+                }
+
+                // The Extended ASCII toggle fills undefined high bytes with CP1252, only when
+                // no `#pragma encoding` names a real table. A byte an explicit table leaves
+                // undefined shows a gap, not a guess from a different encoding.
+                const bool allowExtendedAscii = m_extendedAscii && !m_codepageDeclared;
+
                 if (std::isprint(c) != 0) {
                     const std::array<char, 2> string = { char(c), 0x00 };
                     ImGui::TextUnformatted(string.data());
-                } else if (m_extendedAscii) {
+                } else if (allowExtendedAscii) {
                     if (c <= 0x1F) {
                         constexpr static std::array ControlCharacters = {
                             "\u2400", "\u2401", "\u2402", "\u2403", "\u2404", "\u2405", "\u2406", "\u2407",
@@ -123,8 +161,15 @@ namespace hex::ui {
             m_extendedAscii = enable;
         }
 
+        void setCodepage(const Codepage *codepage, bool declared) {
+            m_codepage = codepage;
+            m_codepageDeclared = declared;
+        }
+
     private:
         bool m_extendedAscii = false;
+        const Codepage *m_codepage = nullptr;
+        bool m_codepageDeclared = false;
     };
 
     /* Hex Editor */
@@ -208,8 +253,11 @@ namespace hex::ui {
                 return ImGuiExt::GetCustomColorU32(ImGuiCustomCol_ToolbarBlue);
         }();
 
+        // A table spells a byte with no character of its own out as a name, like "NUL" or "CR" -
+        // too wide for one cell, so this shows it the way the ASCII column shows an unprintable
+        // byte.
         return {
-            .displayValue = std::string(decoded),
+            .displayValue = isSingleCharacter(decoded) ? std::string(decoded) : ".",
             .advance = advance,
             .color = color
         };
@@ -579,6 +627,10 @@ namespace hex::ui {
 
                 } else {
                     asciiVisualizer.enableExtendedAscii(m_showExtendedAscii);
+                    // A multi-byte encoding, such as Shift-JIS or UTF-8, cannot fit in a
+                    // one-byte-wide ASCII cell. The separate custom encoding column still
+                    // handles those.
+                    asciiVisualizer.setCodepage(&m_codepage, m_codepageDeclared);
                     asciiVisualizer.draw(address, data, size, m_upperCaseHex);
                 }
             }
@@ -879,7 +931,12 @@ namespace hex::ui {
                 ImGui::TableSetupColumn("");
 
                 if (m_showAscii) {
-                    ImGui::TableSetupColumn("hex.ui.common.encoding.ascii"_lang, ImGuiTableColumnFlags_WidthFixed, (CharacterSize.x + m_characterCellPadding * 1_scaled) * bytesPerRow);
+                    // This names the column after the codepage it reads the data with.
+                    // The column title is the only place that name is visible.
+                    const std::string columnName = m_codepage.getName().empty()
+                                                       ? std::string("hex.ui.common.encoding.ascii"_lang)
+                                                       : m_codepage.getName();
+                    ImGui::TableSetupColumn(columnName.c_str(), ImGuiTableColumnFlags_WidthFixed, (CharacterSize.x + m_characterCellPadding * 1_scaled) * bytesPerRow);
                 } else {
                     ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 0);
                 }

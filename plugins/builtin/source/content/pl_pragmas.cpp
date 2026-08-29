@@ -1,6 +1,9 @@
 #include <hex/api/imhex_api/provider.hpp>
+#include <hex/api/imhex_api/hex_editor.hpp>
 #include <hex/api/content_registry/pattern_language.hpp>
+#include <hex/api/task_manager.hpp>
 #include <hex/providers/provider.hpp>
+#include <hex/helpers/encoding_file.hpp>
 #include <hex/helpers/magic.hpp>
 #include <hex/helpers/utils.hpp>
 
@@ -19,6 +22,19 @@ namespace hex::plugin::builtin {
             if (ImHexApi::Provider::isValid())
                 ImHexApi::Provider::get()->setBaseAddress(*baseAddress);
             runtime.setDataBaseAddress(*baseAddress);
+
+            return true;
+        });
+
+        ContentRegistry::PatternLanguage::addPragma("encoding", [](pl::PatternLanguage&, const std::string &value) {
+            if (getEncodingByName(value) == nullptr)
+                return false;
+
+            // A pragma runs on the pattern evaluation thread; only the main thread may change
+            // the hex editor's state.
+            TaskManager::doLater([value] {
+                ImHexApi::HexEditor::setEncoding(value);
+            });
 
             return true;
         });

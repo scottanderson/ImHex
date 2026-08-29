@@ -352,6 +352,18 @@ namespace hex::ui {
             }
         }
 
+        // The codepage the text column reads the data with. Unlike the custom encoding below,
+        // this is not a separate view that gets switched on - ASCII is simply no longer the
+        // only possible codepage.
+        [[nodiscard]] const Codepage& getCodepage() const {
+            return m_codepage;
+        }
+
+        void setCodepage(const Codepage &codepage, bool declared) {
+            m_codepage = codepage;
+            m_codepageDeclared = declared;
+        }
+
         [[nodiscard]] const std::optional<EncodingFile>& getCustomEncoding() const {
             return m_currCustomEncoding;
         }
@@ -501,6 +513,8 @@ namespace hex::ui {
         bool m_footerCollapsed = true;
 
         std::optional<EncodingFile> m_currCustomEncoding;
+        Codepage m_codepage = Codepage::ascii();
+        bool m_codepageDeclared = false;
         std::vector<u64> m_encodingLineStartAddresses;
         CollapsedStateStorage m_collapsedState;
 

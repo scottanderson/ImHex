@@ -101,6 +101,17 @@ namespace hex {
                 return *s_hoveringFunctions;
             }
 
+            // Holds the encoding for the provider on screen only; a background provider's own
+            // encoding only matters while its own patterns draw.
+            static AutoReset<std::optional<std::string>> s_currentEncodingName;
+            void setCurrentEncodingName(std::optional<std::string> name) {
+                if (*s_currentEncodingName == name)
+                    return;
+
+                *s_currentEncodingName = std::move(name);
+                EventFileEncodingChanged::post();
+            }
+
             static AutoReset<std::optional<ProviderRegion>> s_currentSelection;
             void setCurrentSelection(const std::optional<ProviderRegion> &region) {
                 if (region == Region::Invalid()) {
@@ -268,6 +279,14 @@ namespace hex {
 
         const std::optional<Region>& getHoveredRegion(const prv::Provider *provider) {
             return impl::s_hoveredRegion.get(provider);
+        }
+
+        const std::optional<std::string>& getEncodingName() {
+            return *impl::s_currentEncodingName;
+        }
+
+        void setEncoding(const std::string &name) {
+            RequestChangeEncoding::post(name);
         }
 
     }

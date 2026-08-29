@@ -10,6 +10,7 @@
 #include <content/differing_byte_searcher.hpp>
 
 #include <hex/api/events/events_provider.hpp>
+#include <hex/api/events/events_interaction.hpp>
 #include <hex/api/events/requests_interaction.hpp>
 #include <hex/api/events/requests_gui.hpp>
 
@@ -18,9 +19,11 @@
 #include <hex/helpers/default_paths.hpp>
 
 #include <hex/providers/buffered_reader.hpp>
+
 #include <toasts/toast_notification.hpp>
 
 #include <wolv/math_eval/math_evaluator.hpp>
+#include <wolv/utils/string.hpp>
 
 #include <content/providers/view_provider.hpp>
 
@@ -229,6 +232,9 @@ namespace hex::plugin::builtin {
     }
 
     ViewHexEditor::~ViewHexEditor() {
+        RequestChangeEncoding::unsubscribe(this);
+        EventPatternExecuted::unsubscribe(this);
+        EventPatternEditorChanged::unsubscribe(this);
         RequestHexEditorSelectionChange::unsubscribe(this);
         EventProviderChanged::unsubscribe(this);
         EventProviderOpened::unsubscribe(this);
@@ -647,7 +653,110 @@ namespace hex::plugin::builtin {
 
     }
 
+    namespace {
+
+        // Returns the value of `code`'s `encoding` pragma, if it has one. `code` is the exact
+        // source a pattern run just executed, or the editor just settled on between keystrokes.
+        //
+        // Reads the answer from the executed text itself, not a flag set inside the pragma's own
+        // handler: the pattern editor's own syntax-highlighting pass also fires pragma handlers,
+        // on source with no real run to match against, which can credit a flag to the wrong run.
+        //
+        // A commented-out line starts with "//" and never matches. Strips a surrounding pair of
+        // quotes only; does not otherwise re-lex the value.
+        std::optional<std::string> declaredEncodingPragmaValue(const std::string &code) {
+            for (const auto &rawLine : wolv::util::splitString(code, "\n")) {
+                const auto line = wolv::util::trim(rawLine);
+                if (!line.starts_with("#pragma"))
+                    continue;
+
+                const auto rest = wolv::util::trim(line.substr(std::string_view("#pragma").size()));
+                if (!rest.starts_with("encoding"))
+                    continue;
+
+                auto value = wolv::util::trim(rest.substr(std::string_view("encoding").size()));
+                if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+                    value = value.substr(1, value.size() - 2);
+
+                return value;
+            }
+
+            return std::nullopt;
+        }
+
+    }
+
+    void ViewHexEditor::resetEncodingIfNotDeclared(const std::string &code) {
+        const auto declaredValue = declaredEncodingPragmaValue(code);
+
+        // A pragma naming an encoding nothing can resolve is exactly as undeclared as no pragma.
+        if (declaredValue.has_value() && getEncodingByName(*declaredValue) != nullptr)
+            return;
+
+        auto *provider = ImHexApi::Provider::get();
+        if (provider == nullptr)
+            return;
+
+        auto &encodingName = m_declaredEncodingNames.get(provider);
+        if (!encodingName.has_value())
+            return;
+
+        encodingName.reset();
+        this->applyEncoding(provider);
+    }
+
+    void ViewHexEditor::applyEncoding(prv::Provider *provider) {
+        std::optional<std::string> encodingName;
+        if (provider != nullptr)
+            encodingName = m_declaredEncodingNames.get(provider);
+
+        const EncodingFile *encoding = encodingName.has_value() ? getEncodingByName(*encodingName) : nullptr;
+
+        // The text column reads one character per byte, so an encoding that spends more than
+        // one byte on a character - Shift-JIS, UTF-8, any encoding with an emoji - cannot drive
+        // it, and the column stays on ASCII.
+        //
+        // Filling undefined high bytes from an unrelated single-byte codepage would show more
+        // text, but wrong text: the two UTF-8 bytes for "é", read as Windows-1252, spell "Ã©".
+        // The custom encoding column, whose cells are not tied to one byte each, can show these
+        // correctly.
+        std::optional<Codepage> codepage;
+        if (encoding != nullptr)
+            codepage = Codepage::fromEncoding(*encoding);
+
+        const bool declared = encodingName.has_value();
+        m_hexEditor.setCodepage(codepage.value_or(Codepage::ascii()), declared);
+        ImHexApi::HexEditor::impl::setCurrentEncodingName(std::move(encodingName));
+    }
+
     void ViewHexEditor::registerEvents() {
+        RequestChangeEncoding::subscribe(this, [this](const std::string &name) {
+            auto *provider = ImHexApi::Provider::get();
+            if (provider == nullptr || getEncodingByName(name) == nullptr)
+                return;
+
+            // Patterns are re-evaluated constantly while one is being edited, so this arrives once per
+            // keystroke with the same name in it.
+            auto &encodingName = m_declaredEncodingNames.get(provider);
+            if (encodingName == name)
+                return;
+
+            encodingName = name;
+            this->applyEncoding(provider);
+        });
+
+        // A commented-out pragma fires nothing; reads the code directly rather than a flag set
+        // inside the pragma's own handler - see declaredEncodingPragmaValue() above.
+        EventPatternExecuted::subscribe(this, [this](const std::string &code) {
+            this->resetEncodingIfNotDeclared(code);
+        });
+
+        // The pragma applies on every keystroke via the editor's syntax highlighter, without
+        // needing Run. Clearing the pragma needs the same immediacy, handled the same way.
+        EventPatternEditorChanged::subscribe(this, [this](const std::string &code) {
+            this->resetEncodingIfNotDeclared(code);
+        });
+
         RequestHexEditorSelectionChange::subscribe(this, [this](ImHexApi::HexEditor::ProviderRegion region) {
             auto provider = region.getProvider();
 
@@ -691,6 +800,8 @@ namespace hex::plugin::builtin {
                 m_hexEditor.setSelectionUnchecked(std::nullopt, std::nullopt);
                 m_hexEditor.clearCustomEncoding();
             }
+
+            this->applyEncoding(newProvider);
 
             if (isSelectionValid()) {
                 EventRegionSelected::post(ImHexApi::HexEditor::ProviderRegion{ this->getSelection(), newProvider });

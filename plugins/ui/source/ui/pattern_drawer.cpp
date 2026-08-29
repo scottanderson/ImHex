@@ -26,6 +26,7 @@
 #include <hex/api/achievement_manager.hpp>
 #include <hex/api/localization_manager.hpp>
 
+#include <hex/helpers/encoding_file.hpp>
 #include <hex/helpers/scaling.hpp>
 #include <wolv/math_eval/math_evaluator.hpp>
 #include <ui/text_editor.hpp>
@@ -198,6 +199,90 @@ namespace hex::ui {
             }
         }
 
+    }
+
+    namespace {
+
+        // Looks outward from `pattern` through its parents for the nearest [[hex::encoding("...")]]
+        // attribute, so one annotation on a struct or array covers every string inside it.
+        std::optional<std::string> findDeclaredEncodingAttribute(const pl::ptrn::Pattern &pattern) {
+            for (const pl::ptrn::Pattern *node = &pattern; node != nullptr; node = node->getParent()) {
+                if (const auto &args = node->getAttributeArguments("hex::encoding"); !args.empty())
+                    return args.front().toString(true);
+            }
+
+            return std::nullopt;
+        }
+
+    }
+
+    std::optional<EncodedValue> formatValueWithEncoding(pl::ptrn::Pattern &pattern) {
+        // Only byte strings: a single byte encoding applied to a wide string would be wrong.
+        if (dynamic_cast<pl::ptrn::PatternString*>(&pattern) == nullptr)
+            return std::nullopt;
+
+        // An explicit [[format]] on the pattern is the author saying how they want the value to look.
+        if (!pattern.getReadFormatterFunction().empty())
+            return std::nullopt;
+
+        // [[hex::encoding("utf8")]] wins over the document's declared encoding - a file can be
+        // Mac Roman with one UTF-8 name field inside it. Falls back to UTF-8, not the pattern
+        // language's own formatter, when neither is declared.
+        //
+        // "UTF-8" is spelled the way ICU's converter names spell it - uppercase, with the dash -
+        // not the "utf8" ImHex uses for a .tbl file's stem. The three algorithmic encodings below
+        // match this exact spelling only; no alias list, unlike the table-driven encodings
+        // further down.
+        std::string encodingName = "UTF-8";
+        if (const auto &declaredAttribute = findDeclaredEncodingAttribute(pattern); declaredAttribute.has_value())
+            encodingName = *declaredAttribute;
+        else if (const auto &declaredEncoding = ImHexApi::HexEditor::getEncodingName(); declaredEncoding.has_value())
+            encodingName = *declaredEncoding;
+
+        // Trims the same way PatternString::formatDisplayValue() does.
+        auto bytes = std::span<const u8>(pattern.getBytes());
+        bytes = bytes.subspan(0, std::min<size_t>(bytes.size(), 0x7F));
+
+        // Trims trailing NUL padding one whole character unit at a time: one byte for a single
+        // byte encoding, two or four for UTF-16/32, whose characters can contain embedded zero
+        // bytes (U+0042 'B' as UTF-32LE is 42 00 00 00).
+        const size_t encodingUnitSize = (encodingName == "UTF-32LE" || encodingName == "UTF-32BE" || encodingName == "UTF-32") ? 4
+                                       : (encodingName == "UTF-16LE" || encodingName == "UTF-16BE" || encodingName == "UTF-16") ? 2
+                                       : 1;
+        while (bytes.size() >= encodingUnitSize && std::ranges::all_of(bytes.last(encodingUnitSize), [](u8 b) { return b == 0x00; }))
+            bytes = bytes.first(bytes.size() - encodingUnitSize);
+
+        if (bytes.empty())
+            return EncodedValue { "\"\"" };
+
+        // UTF-8, UTF-16, and UTF-32 decode by a fixed algorithm, not a .tbl table. No BOM: the
+        // Unicode Standard defaults to big-endian. Any failed byte or unit makes the whole value
+        // "Invalid".
+        if (encodingName == "UTF-8") {
+            if (auto text = decodeUtf8(bytes); text.has_value())
+                return EncodedValue { fmt::format("\"{}\" ", *text) };
+            return EncodedValue { "Invalid", false };
+        }
+        if (encodingName == "UTF-16LE" || encodingName == "UTF-16BE" || encodingName == "UTF-16") {
+            const auto endian = encodingName == "UTF-16LE" ? std::endian::little : std::endian::big;
+            if (auto text = decodeUtf16(bytes, endian); text.has_value())
+                return EncodedValue { fmt::format("\"{}\" ", *text) };
+            return EncodedValue { "Invalid", false };
+        }
+        if (encodingName == "UTF-32LE" || encodingName == "UTF-32BE" || encodingName == "UTF-32") {
+            const auto endian = encodingName == "UTF-32LE" ? std::endian::little : std::endian::big;
+            if (auto text = decodeUtf32(bytes, endian); text.has_value())
+                return EncodedValue { fmt::format("\"{}\" ", *text) };
+            return EncodedValue { "Invalid", false };
+        }
+
+        // A name only reaches here when declared, on this string or the file. A failed lookup
+        // shows as an error, not a silent fallback to the pattern's own formatting.
+        const auto *encoding = getEncodingByName(encodingName);
+        if (encoding == nullptr)
+            return EncodedValue { fmt::format("unknown encoding '{}'", encodingName), false };
+
+        return EncodedValue { fmt::format("\"{}\" ", decodeForDisplay(*encoding, bytes)) };
     }
 
     std::optional<PatternDrawer::Filter> PatternDrawer::parseComparison(const Filter &currFilter, std::string filterString) {
@@ -420,8 +505,19 @@ namespace hex::ui {
     void PatternDrawer::drawValueColumn(pl::ptrn::Pattern& pattern) {
         ImGui::TableNextColumn();
 
-        const auto value = pattern.getFormattedValue();
-        const bool valueValid = pattern.hasValidFormattedValue();
+        // This does not use value_or(). value_or() always evaluates its
+        // argument, even when the result goes unused. That would build the
+        // pattern's own formatted value every frame, only to discard it.
+        bool encodingInvalid = false;
+        const auto value = [&] {
+            if (auto encodedValue = formatValueWithEncoding(pattern); encodedValue.has_value()) {
+                encodingInvalid = !encodedValue->valid;
+                return std::move(encodedValue->text);
+            }
+
+            return pattern.getFormattedValue();
+        }();
+        const bool valueValid = pattern.hasValidFormattedValue() && !encodingInvalid;
         const auto width = ImGui::GetColumnWidth();
 
         if (const auto &visualizeArgs = pattern.getAttributeArguments("hex::visualize"); !visualizeArgs.empty()) {

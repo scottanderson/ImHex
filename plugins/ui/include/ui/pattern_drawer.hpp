@@ -8,6 +8,7 @@
 
 #include <pl/formatters.hpp>
 
+#include <optional>
 #include <set>
 
 #include <ui/pattern_value_editor.hpp>
@@ -15,6 +16,24 @@
 struct ImGuiTableSortSpecs;
 
 namespace hex::ui {
+
+    struct EncodedValue {
+        std::string text;
+
+        // False when the pattern, or one of its parents, names an encoding that does not exist -
+        // for example a typo, or a name like "utf16"/"utf32" that has no .tbl file behind it. text
+        // is then an error message, not a decoded value, and the caller should show it as an error.
+        bool valid = true;
+    };
+
+    // Renders a string pattern's value using the nearest [[hex::encoding]].
+    // "Nearest" means on the pattern itself, or on one of its parents. If
+    // there is no such attribute, this uses the file's declared character
+    // set instead. Either way, the pattern views then show the same
+    // characters as the hex view. Returns std::nullopt when neither
+    // applies. The caller should then use the pattern's own formatted
+    // value instead.
+    std::optional<EncodedValue> formatValueWithEncoding(pl::ptrn::Pattern &pattern);
 
     class PatternDrawer : public pl::PatternVisitor {
     public:

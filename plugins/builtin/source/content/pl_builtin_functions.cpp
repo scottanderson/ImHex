@@ -4,6 +4,7 @@
 
 #include <hex/providers/provider.hpp>
 #include <hex/helpers/http_requests.hpp>
+#include <hex/helpers/encoding_file.hpp>
 #include <hex/trace/stacktrace.hpp>
 
 #include <pl/core/token.hpp>
@@ -11,7 +12,28 @@
 
 #include <pl/patterns/pattern.hpp>
 
+#include <map>
+#include <mutex>
+
 namespace hex::plugin::builtin {
+
+    namespace {
+
+        // Finds a bundled table by its file name, for example "shiftjis" for
+        // encodings/shiftjis.tbl. Otherwise treats `encoding` as raw table content. Both paths
+        // cache their result.
+        const EncodingFile& resolveEncoding(const std::string &encoding) {
+            if (const auto *knownEncoding = getEncodingByName(encoding); knownEncoding != nullptr)
+                return *knownEncoding;
+
+            static std::mutex mutex;
+            static std::map<std::string, EncodingFile> inlineEncodings;
+
+            std::scoped_lock lock(mutex);
+            return inlineEncodings.try_emplace(encoding, EncodingFile::Type::Thingy, encoding).first->second;
+        }
+
+    }
 
     void registerPatternLanguageFunctions() {
         using namespace pl::core;
@@ -77,6 +99,33 @@ namespace hex::plugin::builtin {
                 const auto mangledString = params[0].toString(false);
 
                 return trace::demangle(mangledString);
+            });
+
+            /* decode(bytes, encoding) */
+            ContentRegistry::PatternLanguage::addFunction(nsHexDec, "decode", FunctionParameterCount::exactly(2), [](Evaluator *, auto params) -> std::optional<Token::Literal> {
+                const auto bytes = params[0].toBytes();
+                const auto encoding = params[1].toString(false);
+
+                const auto &encodingFile = resolveEncoding(encoding);
+
+                return encodingFile.decodeAll(bytes);
+            });
+
+            /* encode(string, encoding) */
+            ContentRegistry::PatternLanguage::addFunction(nsHexDec, "encode", FunctionParameterCount::exactly(2), [](Evaluator *, auto params) -> std::optional<Token::Literal> {
+                const auto string = params[0].toString(false);
+                const auto encoding = params[1].toString(false);
+
+                const auto &encodingFile = resolveEncoding(encoding);
+
+                if (!encodingFile.canEncode())
+                    err::E0012.throwError("This encoding is ambiguous (multiple byte sequences decode to the same value, or one decoded value is a prefix of another) and can therefore not be used to encode data.");
+
+                auto bytes = encodingFile.encodeAll(string);
+                if (!bytes.has_value())
+                    err::E0012.throwError(fmt::format("The string '{}' contains a character sequence that has no representation in this encoding.", string));
+
+                return std::string(bytes->begin(), bytes->end());
             });
         }
 

@@ -34,6 +34,11 @@ namespace hex::ui {
 
     private:
         std::function<void()> m_onEditCallback = [](){};
+
+        // True while the string field currently being typed into has a character its
+        // encoding cannot represent. Only one field is ever in edit mode at a time, so
+        // one flag is enough - it does not need to be keyed per pattern.
+        bool m_hasUnencodableChar = false;
     };
 
 }
