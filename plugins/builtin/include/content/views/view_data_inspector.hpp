@@ -33,8 +33,16 @@ namespace hex::plugin::builtin {
             std::optional<ContentRegistry::DataInspector::impl::EditingFunction> editingFunction;
             bool editing;
             u64 requiredSize;
+            u64 maxSize;
+
+            // The number of bytes to select when this row is clicked; unset when a click
+            // should leave the current selection alone (a variable size row with no way to
+            // know how much of it a given value actually used).
+            std::optional<u64> clickSelectSize;
 
             std::string filterValue;
+
+            std::optional<ContentRegistry::DataInspector::impl::NameFunction> nameFunction;
         };
 
     private:

@@ -54,6 +54,13 @@ namespace hex::plugin::builtin {
             m_selectedRegion = { Region::Invalid(), nullptr };
         });
 
+        // A row like "String" decodes with the current declared file encoding, but only when it
+        // rebuilds its cached value. Without this, changing or clearing `#pragma encoding` would
+        // leave that row showing text decoded with the old encoding until the selection moved.
+        EventFileEncodingChanged::subscribe(this, [this] {
+            m_shouldInvalidate = true;
+        });
+
         ContentRegistry::Settings::onChange("hex.builtin.setting.data_inspector"_unlocalized, "hex.builtin.setting.data_inspector.hidden_rows"_untranslated, [this](const ContentRegistry::Settings::SettingsValue &value) {
             auto filterValues = value.get<std::vector<std::string>>({});
             m_hiddenValues = std::set(filterValues.begin(), filterValues.end());
@@ -69,6 +76,7 @@ namespace hex::plugin::builtin {
     ViewDataInspector::~ViewDataInspector() {
         EventRegionSelected::unsubscribe(this);
         EventProviderClosed::unsubscribe(this);
+        EventFileEncodingChanged::unsubscribe(this);
     }
 
     void ViewDataInspector::updateInspectorRows() {
@@ -128,6 +136,15 @@ namespace hex::plugin::builtin {
 
             preprocessBytes(buffer);
 
+            // A fixed size row always selects its whole size on click. A variable size row only
+            // does that when it can report how much of the buffer it actually used; otherwise a
+            // click leaves the selection as the user made it.
+            std::optional<u64> clickSelectSize;
+            if (entry.sizeFunction)
+                clickSelectSize = (*entry.sizeFunction)(buffer, m_endian);
+            else if (entry.requiredSize > 0 && entry.requiredSize == entry.maxSize)
+                clickSelectSize = entry.requiredSize;
+
             // Insert processed data into the inspector list
             m_workData.emplace_back(
                 entry.unlocalizedName,
@@ -135,7 +152,10 @@ namespace hex::plugin::builtin {
                 entry.editingFunction,
                 false,
                 entry.requiredSize,
-                entry.unlocalizedName.get()
+                entry.maxSize,
+                clickSelectSize,
+                entry.unlocalizedName.get(),
+                entry.nameFunction
             );
         }
 
@@ -209,7 +229,10 @@ namespace hex::plugin::builtin {
                 std::nullopt,
                 false,
                 0,
-                wolv::util::toUTF8String(path)
+                0,
+                std::nullopt,
+                wolv::util::toUTF8String(path),
+                std::nullopt
             );
 
             return;
@@ -252,8 +275,22 @@ namespace hex::plugin::builtin {
                     if (const auto &inlineVisualizeArgs = pattern->getAttributeArguments("hex::inline_visualize"); !inlineVisualizeArgs.empty()) {
                         drawer.drawVisualizer(ContentRegistry::PatternLanguage::impl::getInlineVisualizers(), inlineVisualizeArgs, *pattern, true);
                     } else {
-                        ImGui::TextUnformatted(value.c_str());
+                        // This value is worked out here, not captured earlier with the row's
+                        // other value. The rows only rebuild when the selection changes. But
+                        // this display value must follow the current encoding on every frame.
+                        const auto encodedValue = ui::formatValueWithEncoding(*pattern);
+                        const auto &displayValue = encodedValue.has_value() ? encodedValue->text : value;
+
+                        if (encodedValue.has_value() && !encodedValue->valid)
+                            ImGui::PushStyleColor(ImGuiCol_Text, ImGuiExt::GetCustomColorU32(ImGuiCustomCol_LoggerError));
+                        ImGui::TextUnformatted(displayValue.c_str());
+                        if (encodedValue.has_value() && !encodedValue->valid)
+                            ImGui::PopStyleColor();
                     }
+
+                    // Copying and editing still use the pattern's own value, not the
+                    // display value above. So an edited value writes back in the encoding
+                    // the pattern expects.
                     return value;
                 };
 
@@ -264,7 +301,10 @@ namespace hex::plugin::builtin {
                     editingFunction,
                     false,
                     pattern->getSize(),
-                    wolv::util::toUTF8String(path) + ":" + pattern->getVariableName()
+                    pattern->getSize(),
+                    pattern->getSize() > 0 ? std::optional<u64>(pattern->getSize()) : std::nullopt,
+                    wolv::util::toUTF8String(path) + ":" + pattern->getVariableName(),
+                    std::nullopt
                 );
 
                 AchievementManager::unlockAchievement("hex.builtin.achievement.patterns"_unlocalized,
@@ -279,7 +319,10 @@ namespace hex::plugin::builtin {
                     std::nullopt,
                     false,
                     0,
-                    wolv::util::toUTF8String(path)
+                    0,
+                    std::nullopt,
+                    wolv::util::toUTF8String(path),
+                    std::nullopt
                 );
             }
         }
@@ -462,8 +505,11 @@ namespace hex::plugin::builtin {
     }
 
     void ViewDataInspector::drawInspectorRow(InspectorCacheEntry& entry) {
-        // Render inspector row name
-        ImGui::TextUnformatted(Lang(entry.unlocalizedName));
+        // Render inspector row name. A row's name is normally fixed, but a row like String names
+        // the encoding currently in effect, computed fresh here rather than cached - that can
+        // change without the selection changing.
+        const std::string name = entry.nameFunction.has_value() ? (*entry.nameFunction)() : Lang(entry.unlocalizedName).get();
+        ImGui::TextUnformatted(name.c_str());
         ImGui::TableNextColumn();
 
         if (!entry.editing) {
@@ -483,8 +529,9 @@ namespace hex::plugin::builtin {
             // Handle copying the value to the clipboard when clicking the row
             if (ImGui::Selectable("##InspectorLine", m_selectedEntryName == entry.unlocalizedName, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap | ImGuiSelectableFlags_AllowDoubleClick)) {
                 m_selectedEntryName = entry.unlocalizedName;
-                if (auto selection = ImHexApi::HexEditor::getSelection(); selection.has_value() && entry.requiredSize > 0) {
-                    ImHexApi::HexEditor::setSelection(Region { .address=selection->getStartAddress(), .size=entry.requiredSize });
+
+                if (auto selection = ImHexApi::HexEditor::getSelection(); selection.has_value() && entry.clickSelectSize.has_value()) {
+                    ImHexApi::HexEditor::setSelection(Region { .address=selection->getStartAddress(), .size=*entry.clickSelectSize });
                 }
             }
 

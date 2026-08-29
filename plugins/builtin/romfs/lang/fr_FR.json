@@ -91,7 +91,6 @@
     "hex.builtin.inspector.rgba8": "Couleur RGBA8",
     "hex.builtin.inspector.sleb128": "sLEB128",
     "hex.builtin.inspector.string": "Chaîne",
-    "hex.builtin.inspector.wstring": "Chaîne large",
     "hex.builtin.inspector.string16": "Chaîne16",
     "hex.builtin.inspector.string32": "Chaîne32",
     "hex.builtin.inspector.time32": "time32_t",

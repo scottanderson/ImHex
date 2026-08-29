@@ -18,6 +18,9 @@
 #include <hex/api/content_registry/settings.hpp>
 #include <hex/api/content_registry/tools.hpp>
 #include <hex/api/content_registry/views.hpp>
+#include <hex/helpers/string_codec.hpp>
+
+#include <pl/core/evaluator.hpp>
 
 #include <hex/api/shortcut_manager.hpp>
 #include <hex/api/events/requests_provider.hpp>
@@ -726,6 +729,11 @@ namespace hex {
         void configureRuntime(pl::PatternLanguage &runtime, prv::Provider *provider) {
             runtime.reset();
 
+            // A string pattern decodes and encodes through this codec, so its value is real text
+            // everywhere - comparisons, std::print, the tree view - not just where it is drawn.
+            static const auto stringCodec = std::make_shared<ImHexStringCodec>();
+            runtime.getInternals().evaluator->setStringEncodeDecode(stringCodec);
+
             if (provider != nullptr) {
                 runtime.setDataSource(provider->getBaseAddress(), provider->getActualSize(),
                                       [provider](u64 offset, u8 *buffer, size_t size) {
@@ -899,13 +907,13 @@ namespace hex {
         void add(const UnlocalizedString &unlocalizedName, size_t requiredSize, impl::GeneratorFunction displayGeneratorFunction, std::optional<impl::EditingFunction> editingFunction) {
             log::debug("Registered new data inspector format: {}", unlocalizedName.get());
 
-            impl::s_entries->push_back({ unlocalizedName, requiredSize, requiredSize, std::move(displayGeneratorFunction), std::move(editingFunction) });
+            impl::s_entries->push_back({ unlocalizedName, requiredSize, requiredSize, std::move(displayGeneratorFunction), std::move(editingFunction), std::nullopt, std::nullopt });
         }
 
-        void add(const UnlocalizedString &unlocalizedName, size_t requiredSize, size_t maxSize, impl::GeneratorFunction displayGeneratorFunction, std::optional<impl::EditingFunction> editingFunction) {
+        void add(const UnlocalizedString &unlocalizedName, size_t requiredSize, size_t maxSize, impl::GeneratorFunction displayGeneratorFunction, std::optional<impl::EditingFunction> editingFunction, std::optional<impl::SizeFunction> sizeFunction, std::optional<impl::NameFunction> nameFunction) {
             log::debug("Registered new data inspector format: {}", unlocalizedName.get());
 
-            impl::s_entries->push_back({ unlocalizedName, requiredSize, maxSize, std::move(displayGeneratorFunction), std::move(editingFunction) });
+            impl::s_entries->push_back({ unlocalizedName, requiredSize, maxSize, std::move(displayGeneratorFunction), std::move(editingFunction), std::move(sizeFunction), std::move(nameFunction) });
         }
 
         void drawMenuItems(const std::function<void()> &function) {

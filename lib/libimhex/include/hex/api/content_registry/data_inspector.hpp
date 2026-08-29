@@ -29,12 +29,24 @@ EXPORT_MODULE namespace hex {
             using EditingFunction   = std::function<std::optional<std::vector<u8>>(std::string&, std::endian, DoNotUseThisByItselfTag)>;
             using GeneratorFunction = std::function<DisplayFunction(const std::vector<u8> &, std::endian, NumberDisplayStyle)>;
 
+            // Reports how many of the bytes handed to the generator function a row actually used,
+            // for a row whose requiredSize and maxSize differ - for example a UTF-16 code point,
+            // 2 or 4 bytes depending on whether it read a surrogate pair.
+            using SizeFunction = std::function<size_t(const std::vector<u8> &, std::endian)>;
+
+            // Overrides the row's name column with a label computed fresh every frame, for a row
+            // whose name depends on state outside its bytes - the String row's name names the
+            // encoding currently in effect, which can change without the selection changing.
+            using NameFunction = std::function<std::string()>;
+
             struct Entry {
                 UnlocalizedString unlocalizedName;
                 size_t requiredSize;
                 size_t maxSize;
                 GeneratorFunction generatorFunction;
                 std::optional<EditingFunction> editingFunction;
+                std::optional<SizeFunction> sizeFunction;
+                std::optional<NameFunction> nameFunction;
             };
 
             const std::vector<Entry>& getEntries();
@@ -91,13 +103,21 @@ EXPORT_MODULE namespace hex {
          * @param maxSize The maximum number of bytes to read from the data
          * @param displayGeneratorFunction The function that will be called to generate the display function
          * @param editingFunction The function that will be called to edit the data
+         * @param sizeFunction For an entry whose requiredSize and maxSize differ, reports how many of
+         * the read bytes it actually used, so clicking the row selects that many bytes instead of
+         * leaving the selection untouched
+         * @param nameFunction Overrides the row's name column with a label computed fresh every
+         * frame, for a row whose name depends on state that can change without the selection
+         * changing
          */
         void add(
             const UnlocalizedString &unlocalizedName,
             size_t requiredSize,
             size_t maxSize,
             impl::GeneratorFunction displayGeneratorFunction,
-            std::optional<impl::EditingFunction> editingFunction = std::nullopt
+            std::optional<impl::EditingFunction> editingFunction = std::nullopt,
+            std::optional<impl::SizeFunction> sizeFunction = std::nullopt,
+            std::optional<impl::NameFunction> nameFunction = std::nullopt
         );
 
         /**

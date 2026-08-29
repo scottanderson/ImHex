@@ -79,7 +79,6 @@
     "hex.builtin.inspector.rgba8": "RGBA8 колір",
     "hex.builtin.inspector.sleb128": "sLEB128",
     "hex.builtin.inspector.string16": "String16",
-    "hex.builtin.inspector.wstring": "Wide String",
     "hex.builtin.inspector.string": "String",
     "hex.builtin.inspector.string32": "String32",
     "hex.builtin.inspector.time32": "time32_t",
