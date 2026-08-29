@@ -2,6 +2,7 @@
 #include <hex/api/imhex_api/provider.hpp>
 #include <hex/api/imhex_api/hex_editor.hpp>
 #include <hex/api/content_registry/data_inspector.hpp>
+#include <hex/api/content_registry/pattern_language.hpp>
 
 #include <hex/helpers/utils.hpp>
 #include <hex/helpers/crypto.hpp>
@@ -669,8 +670,16 @@ namespace hex::plugin::builtin {
             return ImHexApi::HexEditor::getEncodingName().value_or("ASCII");
         };
 
+        // A placed pattern field exactly matching the current selection resolved its own
+        // encoding when it last ran; that takes precedence over the document default, the same
+        // way [[hex::encoding]] does in the pattern views. std::nullopt when no such field
+        // exists, or none has run yet.
+        const auto selectionEncoding = [](const ImHexApi::HexEditor::ProviderRegion &selection) -> std::optional<std::string> {
+            return ContentRegistry::PatternLanguage::getRuntime().findStringEncoding(selection.getStartAddress(), selection.getSize());
+        };
+
         ContentRegistry::DataInspector::add("hex.builtin.inspector.string"_unlocalized, 1, 512,
-            [](auto buffer, auto endian, auto style) {
+            [selectionEncoding](auto buffer, auto endian, auto style) {
                 std::ignore = buffer;
                 std::ignore = endian;
                 std::ignore = style;
@@ -682,13 +691,13 @@ namespace hex::plugin::builtin {
                     std::vector<u8> stringBuffer(std::min<size_t>(currSelection->size, 0x1000), 0x00);
                     ImHexApi::Provider::get()->read(currSelection->address, stringBuffer.data(), stringBuffer.size());
 
-                    // This row decodes with the document's declared encoding, not plain ASCII, once
-                    // `#pragma encoding` says the bytes mean something else. It has no selection to
-                    // pattern link, so a field's own [[hex::encoding]] does not apply here - only in
-                    // the pattern views.
+                    auto resolvedEncoding = selectionEncoding(*currSelection);
+                    if (!resolvedEncoding.has_value())
+                        resolvedEncoding = ImHexApi::HexEditor::getEncodingName();
+
                     const EncodingFile *encoding = nullptr;
-                    if (const auto &declaredEncoding = ImHexApi::HexEditor::getEncodingName(); declaredEncoding.has_value())
-                        encoding = getEncodingByName(*declaredEncoding);
+                    if (resolvedEncoding.has_value())
+                        encoding = getEncodingByName(*resolvedEncoding);
 
                     if (encoding != nullptr)
                         value = copyValue = decodeForDisplay(*encoding, stringBuffer);
@@ -703,12 +712,18 @@ namespace hex::plugin::builtin {
 
                 return [value, copyValue] { ImGuiExt::TextFormatted("\"{0}\"", value.c_str()); return copyValue; };
             },
-            ContentRegistry::DataInspector::EditWidget::TextInput([](const std::string &value, std::endian endian) -> std::vector<u8> {
+            ContentRegistry::DataInspector::EditWidget::TextInput([selectionEncoding](const std::string &value, std::endian endian) -> std::vector<u8> {
                 std::ignore = endian;
 
-                if (const auto &declaredEncoding = ImHexApi::HexEditor::getEncodingName(); declaredEncoding.has_value()) {
-                    if (const auto *encoding = getEncodingByName(*declaredEncoding); encoding != nullptr && encoding->canEncode()) {
-                        auto [sanitized, replaced] = sanitizeForEncoding(value, *declaredEncoding);
+                std::optional<std::string> resolvedEncoding;
+                if (auto currSelection = ImHexApi::HexEditor::getSelection(); currSelection.has_value())
+                    resolvedEncoding = selectionEncoding(*currSelection);
+                if (!resolvedEncoding.has_value())
+                    resolvedEncoding = ImHexApi::HexEditor::getEncodingName();
+
+                if (resolvedEncoding.has_value()) {
+                    if (const auto *encoding = getEncodingByName(*resolvedEncoding); encoding != nullptr && encoding->canEncode()) {
+                        auto [sanitized, replaced] = sanitizeForEncoding(value, *resolvedEncoding);
                         if (replaced)
                             log::warn("Replaced a character with '?' - this encoding has no byte for it");
 
@@ -720,7 +735,13 @@ namespace hex::plugin::builtin {
                 return hex::decodeByteString(value);
             }),
             std::nullopt,
-            [declaredEncodingOrAscii] { return fmt::format("String (document: {})", declaredEncodingOrAscii()); }
+            [declaredEncodingOrAscii, selectionEncoding] {
+                if (auto currSelection = ImHexApi::HexEditor::getSelection(); currSelection.has_value()) {
+                    if (auto encoding = selectionEncoding(*currSelection); encoding.has_value())
+                        return fmt::format("String ({})", *encoding);
+                }
+                return fmt::format("String (document: {})", declaredEncodingOrAscii());
+            }
         );
 
         ContentRegistry::DataInspector::add("hex.builtin.inspector.string16"_unlocalized, sizeof(char16_t), 512,
