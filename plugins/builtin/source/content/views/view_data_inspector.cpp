@@ -269,7 +269,11 @@ namespace hex::plugin::builtin {
                     if (const auto &inlineVisualizeArgs = pattern->getAttributeArguments("hex::inline_visualize"); !inlineVisualizeArgs.empty()) {
                         drawer.drawVisualizer(ContentRegistry::PatternLanguage::impl::getInlineVisualizers(), inlineVisualizeArgs, *pattern, true);
                     } else {
-                        const auto escapedValue = escapeControlCharacters(value);
+                        // Read fresh every frame, not the row's own captured value above;
+                        // the rows only rebuild when the selection changes. An encoding
+                        // change clears every pattern's cached display value (see
+                        // ViewPatternData), so this stays current without a rebuild.
+                        const auto escapedValue = escapeControlCharacters(pattern->getFormattedValue());
                         const bool displayValid = pattern->hasValidFormattedValue() && escapedValue.has_value();
 
                         if (!displayValid)
@@ -279,7 +283,9 @@ namespace hex::plugin::builtin {
                             ImGui::PopStyleColor();
                     }
 
-                    // The copy value stays unescaped. Escaping is only for display.
+                    // Copying and editing still use the pattern's own value, not the
+                    // display value above. So an edited value writes back in the encoding
+                    // the pattern expects.
                     return value;
                 };
 

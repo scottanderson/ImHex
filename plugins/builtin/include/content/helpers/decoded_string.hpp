@@ -9,7 +9,10 @@
 
 #include <pl/core/string_encode_decode.hpp>
 
+#include <wolv/utils/string.hpp>
+
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -73,6 +76,35 @@ namespace hex::plugin::builtin {
         }
 
         return total;
+    }
+
+    // Formats the one code point at `buffer`'s start under the named algorithmic
+    // encoding, as the character itself and its U+ notation. Returns std::nullopt
+    // when those bytes are not one whole, valid code point - a malformed sequence,
+    // a lone surrogate, or a code point the buffer cuts off. A row shows
+    // "hex.builtin.inspector.invalid" for all three.
+    inline std::optional<std::string> formatCodePoint(std::string_view encodingName, std::span<const u8> buffer) {
+        const auto decoded = decodeAlgorithmicTextBounded(encodingName, buffer, 1);
+        if (!decoded.has_value() || decoded->codepointCount == 0)
+            return std::nullopt;
+
+        const auto codepoints = wolv::util::utf8ToUtf32(decoded->text);
+        if (!codepoints.has_value() || codepoints->empty())
+            return std::nullopt;
+
+        const char32_t codepoint = codepoints->front();
+        return fmt::format("'{0}' (U+{1:04X})", escapeCodepoint(codepoint), u32(codepoint));
+    }
+
+    // How many bytes the code point at `buffer`'s start uses. Falls back to
+    // `codeUnitSize` when those bytes decode to nothing, so that clicking a
+    // malformed row still selects one whole code unit instead of nothing.
+    inline size_t codePointSize(std::string_view encodingName, std::span<const u8> buffer, size_t codeUnitSize) {
+        const auto decoded = decodeAlgorithmicTextBounded(encodingName, buffer, 1);
+        if (!decoded.has_value() || decoded->bytesConsumed == 0)
+            return codeUnitSize;
+
+        return decoded->bytesConsumed;
     }
 
     // Formats a decoded string row the same way PatternString::formatDisplayValue()
