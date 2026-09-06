@@ -45,7 +45,10 @@ EXPORT_MODULE namespace hex {
 
             class Widget {
             public:
-                using Function = std::function<std::vector<u8>(const std::string&, std::endian)>;
+                // Returns nullopt when `value` does not represent a valid edit, for
+                // example a character the row's encoding cannot represent. A widget
+                // keeps editing open rather than committing in that case.
+                using Function = std::function<std::optional<std::vector<u8>>(const std::string&, std::endian)>;
 
                 explicit Widget(const Function &function) : m_function(function) {}
 
@@ -55,7 +58,7 @@ EXPORT_MODULE namespace hex {
                     return draw(value, endian);
                 }
 
-                std::vector<u8> getBytes(const std::string &value, std::endian endian) const {
+                std::optional<std::vector<u8>> getBytes(const std::string &value, std::endian endian) const {
                     return m_function(value, endian);
                 }
 
@@ -66,6 +69,9 @@ EXPORT_MODULE namespace hex {
             struct TextInput : Widget {
                 explicit TextInput(const Function &function) : Widget(function) {}
                 std::optional<std::vector<u8>> draw(std::string &value, std::endian endian) override;
+
+            private:
+                bool m_hasInvalidValue = false;
             };
 
         }

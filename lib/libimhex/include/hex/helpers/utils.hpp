@@ -110,7 +110,11 @@ namespace hex {
     [[nodiscard]] std::string escapeByte(u8 byte);
 
     [[nodiscard]] std::string encodeByteString(const std::vector<u8> &bytes);
-    [[nodiscard]] std::vector<u8> decodeByteString(const std::string &string);
+
+    // Parses hex::encodeByteString()'s escape syntax back into bytes. Returns
+    // std::nullopt on a malformed escape (an incomplete \x, \u, or unknown
+    // letter) - distinct from a valid, empty result for an empty `string`.
+    [[nodiscard]] std::optional<std::vector<u8>> decodeByteString(const std::string &string);
 
     [[nodiscard]] std::wstring utf8ToUtf16(const std::string& utf8);
     [[nodiscard]] std::string utf16ToUtf8(const std::wstring& utf16);
