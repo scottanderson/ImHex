@@ -14,6 +14,9 @@
 
 #include <hex/ui/imgui_imhex_extensions.h>
 #include <hex/helpers/encoding_file.hpp>
+#include <hex/helpers/string_codec.hpp>
+#include <hex/helpers/utils.hpp>
+#include <content/helpers/decoded_string.hpp>
 #include <imgui_internal.h>
 
 #include <pl/pattern_language.hpp>
@@ -55,6 +58,12 @@ namespace hex::plugin::builtin {
             m_selectedRegion = { Region::Invalid(), nullptr };
         });
 
+        // The document encoding row's presence, name, and decoded value all depend
+        // on the declared encoding, not just the selection.
+        EventFileEncodingChanged::subscribe(this, [this] {
+            m_shouldInvalidate = true;
+        });
+
         ContentRegistry::Settings::onChange("hex.builtin.setting.data_inspector"_unlocalized, "hex.builtin.setting.data_inspector.hidden_rows"_untranslated, [this](const ContentRegistry::Settings::SettingsValue &value) {
             auto filterValues = value.get<std::vector<std::string>>({});
             m_hiddenValues = std::set(filterValues.begin(), filterValues.end());
@@ -70,6 +79,7 @@ namespace hex::plugin::builtin {
     ViewDataInspector::~ViewDataInspector() {
         EventRegionSelected::unsubscribe(this);
         EventProviderClosed::unsubscribe(this);
+        EventFileEncodingChanged::unsubscribe(this);
     }
 
     void ViewDataInspector::updateInspectorRows() {
@@ -147,14 +157,98 @@ namespace hex::plugin::builtin {
                 entry.requiredSize,
                 entry.maxSize,
                 clickSelectSize,
-                entry.unlocalizedName.get()
+                entry.unlocalizedName.get(),
+                std::nullopt
             );
         }
+
+        // After the registered rows, not woven in among them. Tying its position
+        // to a neighbouring row would tie its presence to that row surviving the
+        // size filters above, which has nothing to do with the encoding.
+        this->addDocumentEncodingRow();
 
         // Execute custom inspectors
         this->executeInspectors();
 
         m_dataValid = true;
+    }
+
+    void ViewDataInspector::addDocumentEncodingRow() {
+        // A row for the document's own declared encoding. Only appears once a
+        // script or the hex editor's encoding column names something other than
+        // the UTF-8 default; that default already has its own row.
+        const auto declaredEncoding = ImHexApi::HexEditor::getEncodingName();
+        if (!declaredEncoding.has_value() || *declaredEncoding == "UTF-8")
+            return;
+
+        if (m_validBytes < 1)
+            return;
+
+        const auto &encodingName = *declaredEncoding;
+
+        // A table-driven encoding can spend more than 4 bytes on one character;
+        // an algorithmic one (a UTF-16/32 variant) never spends more than 4.
+        size_t longestSequence = 4;
+        if (!isAlgorithmicEncodingName(encodingName)) {
+            if (const auto *table = getEncodingByName(encodingName); table != nullptr)
+                longestSequence = table->getLongestSequence();
+        }
+        const size_t maxSize = DisplayBudget * longestSequence;
+
+        std::vector<u8> buffer(std::min<size_t>(m_validBytes, maxSize));
+        m_selectedRegion.getProvider()->read(m_selectedRegion.getStartAddress(), buffer.data(), buffer.size());
+        preprocessBytes(buffer);
+
+        // Stateless; one shared instance instead of one allocation per row build.
+        static const ImHexStringCodec codec;
+        const auto decodeOne = [encodingName](std::span<const u8> bytes) { return codec.decode(bytes, encodingName, 1); };
+
+        auto currSelection = ImHexApi::HexEditor::getSelection();
+
+        std::string value, copyValue;
+        bool valid = true;
+        size_t clickSelectSize = 0;
+
+        if (currSelection.has_value()) {
+            const size_t targetSize = currSelection->size;
+
+            const auto decoded = decodeThroughSelection(buffer, targetSize, DisplayBudget, decodeOne);
+            valid = decoded.stopReason != pl::core::DecodeStop::MalformedBytes;
+            clickSelectSize = extendToWholeCodePoints(buffer, targetSize, decodeOne);
+
+            copyValue = nulToPicture(decoded.text);
+            value = valid ? formatDecodedString("", decoded, targetSize) : "";
+        }
+
+        auto displayFunction = [value, copyValue, valid] {
+            if (!valid)
+                ImGuiExt::TextFormattedDisabled("hex.builtin.inspector.invalid"_lang);
+            else
+                ImGuiExt::TextFormatted("{}", value);
+            return copyValue;
+        };
+
+        // Encodes under the encoding named on this row, not whatever the document's
+        // declared encoding has changed to by the time the edit commits.
+        auto editingFunction = ContentRegistry::DataInspector::EditWidget::TextInput([encodingName](const std::string &value, std::endian) -> std::optional<std::vector<u8>> {
+            auto utf8 = pictureToNul(value);
+            if (!isValidUtf8(utf8))
+                return std::nullopt;
+
+            return codec.encode(utf8, encodingName);
+        });
+
+        m_workData.emplace_back(
+            "hex.builtin.inspector.document_encoding"_unlocalized,
+            displayFunction,
+            editingFunction,
+            false,
+            1,
+            maxSize,
+            clickSelectSize > 0 ? std::optional<u64>(clickSelectSize) : std::nullopt,
+            "hex.builtin.inspector.document_encoding",
+            fmt::format("hex.builtin.inspector.document_encoding"_lang, encodingName)
+        );
     }
 
     void ViewDataInspector::inspectorReadFunction(u64 offset, u8 *buffer, size_t size) {
@@ -223,7 +317,8 @@ namespace hex::plugin::builtin {
                 0,
                 0,
                 std::nullopt,
-                wolv::util::toUTF8String(path)
+                wolv::util::toUTF8String(path),
+                std::nullopt
             );
 
             return;
@@ -298,7 +393,8 @@ namespace hex::plugin::builtin {
                     pattern->getSize(),
                     pattern->getSize(),
                     pattern->getSize() > 0 ? std::optional<u64>(pattern->getSize()) : std::nullopt,
-                    wolv::util::toUTF8String(path) + ":" + pattern->getVariableName()
+                    wolv::util::toUTF8String(path) + ":" + pattern->getVariableName(),
+                    std::nullopt
                 );
 
                 AchievementManager::unlockAchievement("hex.builtin.achievement.patterns"_unlocalized,
@@ -315,7 +411,8 @@ namespace hex::plugin::builtin {
                     0,
                     0,
                     std::nullopt,
-                    wolv::util::toUTF8String(path)
+                    wolv::util::toUTF8String(path),
+                    std::nullopt
                 );
             }
         }
@@ -499,7 +596,8 @@ namespace hex::plugin::builtin {
 
     void ViewDataInspector::drawInspectorRow(InspectorCacheEntry& entry) {
         // Render inspector row name
-        ImGui::TextUnformatted(Lang(entry.unlocalizedName));
+        const std::string name = entry.displayName.value_or(Lang(entry.unlocalizedName).get());
+        ImGui::TextUnformatted(name.c_str());
         ImGui::TableNextColumn();
 
         if (!entry.editing) {
