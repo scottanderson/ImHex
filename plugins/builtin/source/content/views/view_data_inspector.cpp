@@ -228,7 +228,7 @@ namespace hex::plugin::builtin {
             // Set up the editing function if a write formatter is available
             std::optional<ContentRegistry::DataInspector::impl::EditingFunction> editingFunction;
             if (!pattern->getWriteFormatterFunction().empty()) {
-                editingFunction = ContentRegistry::DataInspector::EditWidget::TextInput([&pattern](const std::string &value, std::endian) -> std::vector<u8> {
+                editingFunction = ContentRegistry::DataInspector::EditWidget::TextInput([&pattern](const std::string &value, std::endian) -> std::optional<std::vector<u8>> {
                     try {
                         pattern->setValue(value);
                     } catch (const pl::core::err::EvaluatorError::Exception &error) {
@@ -236,7 +236,10 @@ namespace hex::plugin::builtin {
                                    pattern->getDisplayName(), value, error.what());
                     }
 
-                    return {};
+                    // The write, if any, already happened above through the pattern's
+                    // own write formatter. Report success either way so editing closes;
+                    // this returns no actual bytes for the caller to write again.
+                    return std::vector<u8>{};
                 });
             }
 
@@ -485,8 +488,23 @@ namespace hex::plugin::builtin {
                 ImGui::EndPopup();
             }
 
-            // Render inspector row value
-            const auto &copyValue = entry.displayFunction();
+            // Render inspector row value. Catch the same way as the edit widget below.
+            // A custom inspector's display function runs pattern language code. That
+            // code can throw.
+            std::string copyValue;
+            try {
+                copyValue = entry.displayFunction();
+                entry.displayErrorLogged = false;
+            } catch (const std::exception &e) {
+                // Logged once, not every frame. A row that keeps failing is drawn
+                // again 60 times a second, and each draw calls this same function.
+                if (!entry.displayErrorLogged) {
+                    entry.displayErrorLogged = true;
+                    log::error("Data Inspector row display failed: {}", e.what());
+                }
+
+                ImGuiExt::TextFormattedDisabled("hex.builtin.inspector.invalid"_lang);
+            }
 
             ImGui::SameLine();
 
@@ -536,8 +554,19 @@ namespace hex::plugin::builtin {
             ImGui::SetNextItemWidth(-1);
             ImGui::SetKeyboardFocusHere();
 
-            // Draw editing widget and capture edited value
-            auto bytes = (*entry.editingFunction)(m_editingValue, m_endian, {});
+            // A row's edit widget can throw, for example a row backed by a pattern field
+            // whose bytes are not valid under its encoding. An exception here would cross
+            // this function's own PushStyleVar()/PopStyleVar() and the caller's
+            // BeginTable()/EndTable(), corrupting ImGui's internal state and crashing
+            // the application.
+            std::optional<std::vector<u8>> bytes;
+            try {
+                bytes = (*entry.editingFunction)(m_editingValue, m_endian, {});
+            } catch (const std::exception &e) {
+                log::error("Data Inspector row edit widget failed: {}", e.what());
+                entry.editing = false;
+            }
+
             if (bytes.has_value()) {
                 preprocessBytes(*bytes);
 

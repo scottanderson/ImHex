@@ -35,6 +35,11 @@ namespace hex::plugin::builtin {
             u64 requiredSize;
 
             std::string filterValue;
+
+            // Whether this row's display function has already thrown and been
+            // logged. Stops one failing row from writing the same line to the log
+            // on every frame it stays on screen.
+            bool displayErrorLogged = false;
         };
 
     private:

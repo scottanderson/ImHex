@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <ui/pattern_drawer.hpp>
 
+#include <hex/helpers/logger.hpp>
+
 #include <pl/core/lexer.hpp>
 
 #include <pl/patterns/pattern_array_dynamic.hpp>
@@ -597,8 +599,16 @@ namespace hex::ui {
                 ImGui::SetClipboardText(pattern.getDisplayName().c_str());
             if (ImGui::MenuItem("hex.ui.pattern_drawer.context.copy_address"_lang, nullptr, false, true))
                 ImGui::SetClipboardText(fmt::format("0x{:02X}", pattern.getOffset()).c_str());
-            if (ImGui::MenuItem("hex.ui.pattern_drawer.context.copy_value"_lang, nullptr, false, true))
-                ImGui::SetClipboardText(pattern.toString().c_str());
+            if (ImGui::MenuItem("hex.ui.pattern_drawer.context.copy_value"_lang, nullptr, false, true)) {
+                // toString() can throw when a string's bytes are not valid under
+                // its encoding. An exception here would cross a BeginTable()/
+                // EndTable() pair and crash the application.
+                try {
+                    ImGui::SetClipboardText(pattern.toString().c_str());
+                } catch (const std::exception &e) {
+                    log::error("Failed to decode pattern value: {}", e.what());
+                }
+            }
             if (ImGui::MenuItem("hex.ui.pattern_drawer.context.copy_comment"_lang, nullptr, false, !pattern.getComment().empty()))
                 ImGui::SetClipboardText(pattern.getComment().c_str());
 
