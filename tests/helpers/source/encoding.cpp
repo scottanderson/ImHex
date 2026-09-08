@@ -1,0 +1,291 @@
+#include <hex/test/tests.hpp>
+
+#include <hex/helpers/encoding_file.hpp>
+
+#include <bit>
+#include <string>
+#include <vector>
+
+using namespace std::literals::string_literals;
+
+namespace {
+
+    std::vector<u8> bytesOf(std::string_view text) {
+        return { text.begin(), text.end() };
+    }
+
+}
+
+TEST_SEQUENCE("DecodeUnicodeText") {
+    using pl::core::DecodeStop;
+
+    // Decoded every byte and ran out of input, rather than stopping early.
+    const auto whole = [](const pl::core::DecodeResult &result, size_t byteCount) {
+        return result.stopReason == DecodeStop::EndOfInput && result.bytesConsumed == byteCount;
+    };
+
+    // UTF-8: rejects an overlong encoding, a surrogate, and a truncated sequence.
+    TEST_ASSERT(hex::isValidUtf8("hello"));
+    TEST_ASSERT(hex::isValidUtf8(""));
+    TEST_ASSERT(hex::isValidUtf8("\xC3\xA9"));
+    TEST_ASSERT(!hex::isValidUtf8("\xC0\xAF"));
+    TEST_ASSERT(!hex::isValidUtf8("\xED\xA0\x80"));
+    TEST_ASSERT(!hex::isValidUtf8("\xC3"));
+    TEST_ASSERT(!hex::isValidUtf8("\x80"));
+
+    const auto utf8 = hex::decodeUtf8Bounded(bytesOf("h\xC3\xA9llo"));
+    TEST_ASSERT(whole(utf8, 6));
+    TEST_ASSERT(utf8.text == "h\xC3\xA9llo");
+    TEST_ASSERT(utf8.codepointCount == 5);
+
+    // UTF-16: a surrogate pair is one code point; a lone half is invalid.
+    const auto utf16Le = hex::decodeUtf16Bounded(std::vector<u8>{ 0x41, 0x00 }, std::endian::little);
+    TEST_ASSERT(whole(utf16Le, 2) && utf16Le.text == "A");
+
+    const auto utf16Be = hex::decodeUtf16Bounded(std::vector<u8>{ 0x00, 0x41 }, std::endian::big);
+    TEST_ASSERT(whole(utf16Be, 2) && utf16Be.text == "A");
+
+    const auto pair = hex::decodeUtf16Bounded(std::vector<u8>{ 0x3D, 0xD8, 0x00, 0xDE }, std::endian::little);
+    TEST_ASSERT(whole(pair, 4));
+    TEST_ASSERT(pair.text == "\xF0\x9F\x98\x80");
+    TEST_ASSERT(pair.codepointCount == 1);
+
+    // An odd trailing byte cannot be whole UTF-16. Nothing consumes it.
+    const auto oddByte = hex::decodeUtf16Bounded(std::vector<u8>{ 0x41 }, std::endian::little);
+    TEST_ASSERT(oddByte.stopReason == DecodeStop::EndOfInput);
+    TEST_ASSERT(oddByte.bytesConsumed == 0);
+
+    // UTF-32: rejects a surrogate and anything past U+10FFFF.
+    const auto utf32 = hex::decodeUtf32Bounded(std::vector<u8>{ 0x41, 0x00, 0x00, 0x00 }, std::endian::little);
+    TEST_ASSERT(whole(utf32, 4) && utf32.text == "A");
+
+    const auto surrogate = hex::decodeUtf32Bounded(std::vector<u8>{ 0x00, 0xD8, 0x00, 0x00 }, std::endian::little);
+    TEST_ASSERT(surrogate.stopReason == DecodeStop::MalformedBytes);
+
+    // Only the endianness-specific names decode. A bare "UTF-16" would have to
+    // guess a byte order, so it is not an algorithmic encoding name at all.
+    TEST_ASSERT(hex::isAlgorithmicEncodingName("UTF-8"));
+    TEST_ASSERT(hex::isAlgorithmicEncodingName("UTF-16LE"));
+    TEST_ASSERT(hex::isAlgorithmicEncodingName("UTF-32BE"));
+    TEST_ASSERT(!hex::isAlgorithmicEncodingName("UTF-16"));
+    TEST_ASSERT(!hex::isAlgorithmicEncodingName("UTF-32"));
+    TEST_ASSERT(!hex::isAlgorithmicEncodingName("shift_jis"));
+
+    TEST_ASSERT(hex::decodeAlgorithmicTextBounded("UTF-16LE", std::vector<u8>{ 0x41, 0x00 })->text == "A");
+    TEST_ASSERT(!hex::decodeAlgorithmicTextBounded("shift_jis", std::vector<u8>{ 0x41 }).has_value());
+
+    TEST_SUCCESS();
+};
+
+TEST_SEQUENCE("DecodeUnicodeTextBounded") {
+    using pl::core::DecodeStop;
+
+    // Stops at the code point limit, not at the end of the buffer.
+    const auto limited = hex::decodeUtf8Bounded(bytesOf("abc"), 2);
+    TEST_ASSERT(limited.stopReason == DecodeStop::CodepointLimit);
+    TEST_ASSERT(limited.text == "ab");
+    TEST_ASSERT(limited.bytesConsumed == 2);
+    TEST_ASSERT(limited.codepointCount == 2);
+
+    // A whole buffer with no limit runs out of input.
+    const auto whole = hex::decodeUtf8Bounded(bytesOf("abc"));
+    TEST_ASSERT(whole.stopReason == DecodeStop::EndOfInput);
+    TEST_ASSERT(whole.bytesConsumed == 3);
+
+    // A code point cut off by the end of the buffer is EndOfInput, not
+    // MalformedBytes: more bytes would complete it.
+    const auto truncated = hex::decodeUtf8Bounded(std::vector<u8>{ 0x41, 0xC3 });
+    TEST_ASSERT(truncated.stopReason == DecodeStop::EndOfInput);
+    TEST_ASSERT(truncated.text == "A");
+    TEST_ASSERT(truncated.bytesConsumed == 1);
+
+    // A byte sequence that can never be valid is MalformedBytes.
+    const auto malformed = hex::decodeUtf8Bounded(std::vector<u8>{ 0x41, 0xFF });
+    TEST_ASSERT(malformed.stopReason == DecodeStop::MalformedBytes);
+    TEST_ASSERT(malformed.bytesConsumed == 1);
+
+    // The same split applies to UTF-16: a high surrogate with no room for its
+    // low half is EndOfInput; a low half on its own can never be valid.
+    const auto cutPair = hex::decodeUtf16Bounded(std::vector<u8>{ 0x3D, 0xD8 }, std::endian::little);
+    TEST_ASSERT(cutPair.stopReason == DecodeStop::EndOfInput);
+
+    const auto loneLow = hex::decodeUtf16Bounded(std::vector<u8>{ 0x00, 0xDC }, std::endian::little);
+    TEST_ASSERT(loneLow.stopReason == DecodeStop::MalformedBytes);
+
+    const auto badUtf32 = hex::decodeUtf32Bounded(std::vector<u8>{ 0x00, 0x00, 0x11, 0x00 }, std::endian::little);
+    TEST_ASSERT(badUtf32.stopReason == DecodeStop::MalformedBytes);
+
+    TEST_SUCCESS();
+};
+
+TEST_SEQUENCE("EscapeCodepoints") {
+    // A non-printable ASCII byte escapes; a printable one passes through.
+    TEST_ASSERT(hex::escapeCodepoint(U'A') == "A");
+    TEST_ASSERT(hex::escapeCodepoint(U'\n') == "\\n");
+    TEST_ASSERT(hex::escapeCodepoint(U'\\') == "\\\\");
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0x01)) == "\\x01");
+
+    // Above ASCII, only a codepoint with no visible glyph escapes.
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0x00E9)) == "\xC3\xA9");
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0x0085)) == "\\u0085");  // C1 control
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0x200B)) == "\\u200B");  // zero width space
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0x200E)) == "\\u200E");  // left to right mark
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0x200F)) == "\\u200F");  // right to left mark
+
+    // The joiners pass through. They decide how their neighbours join, so
+    // escaping one damages text that is visible: a ZWJ escape splits a single
+    // emoji into its parts.
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0x200C)) == "\xE2\x80\x8C");  // ZWNJ
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0x200D)) == "\xE2\x80\x8D");  // ZWJ
+
+    // A ZWJ emoji sequence survives whole, rather than coming apart around an
+    // escape. Man + ZWJ + woman + ZWJ + girl is one family emoji.
+    const auto family = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"s;
+    TEST_ASSERT(hex::escapeControlCharacters(family).value() == family);
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0xFEFF)) == "\\uFEFF");  // BOM
+
+    // A combining mark is not a format character. It stays, so text like an
+    // emoji with a presentation selector still reads as itself.
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0xFE0F)) == "\xEF\xB8\x8F");
+
+    // \uNNNN cannot reach past the Basic Multilingual Plane, so an invisible
+    // codepoint up there needs the wider \UNNNNNNNN escape.
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0x1F600)) == "\xF0\x9F\x98\x80");
+    TEST_ASSERT(hex::escapeCodepoint(char32_t(0xE0001)) == "\\U000E0001");  // language tag
+
+    // A whole string escapes one codepoint at a time.
+    TEST_ASSERT(hex::escapeControlCharacters("ab\nc").value() == "ab\\nc");
+
+    // A lone trailing NUL reads as a normal C-string end.
+    TEST_ASSERT(hex::escapeControlCharacters("ab\0"s).value() == "ab\\0");
+    TEST_ASSERT(hex::escapeControlCharacters("a\0b"s).value() == "a\\x00b");
+
+    // Invalid UTF-8 has no character to escape.
+    TEST_ASSERT(!hex::escapeControlCharacters("\xFF").has_value());
+
+    TEST_SUCCESS();
+};
+
+TEST_SEQUENCE("EncodingFileTable") {
+    // "HEX BYTES=text" per line. Bytes 0x00-0x7F the table leaves out default
+    // to standard ASCII.
+    const hex::EncodingFile table(hex::EncodingFile::Type::Thingy, std::string(
+        "80=\xCE\xB1\n"
+        "81=\xCE\xB2\n"
+        "8140=\xE3\x81\x82\n"));
+
+    TEST_ASSERT(table.valid());
+    TEST_ASSERT(table.getShortestSequence() == 1);
+    TEST_ASSERT(table.getLongestSequence() == 2);
+
+    // Decoding prefers the longest matching sequence.
+    TEST_ASSERT(table.decodeAll(std::vector<u8>{ 0x80, 0x81 }) == "\xCE\xB1\xCE\xB2");
+    TEST_ASSERT(table.decodeAll(std::vector<u8>{ 0x81, 0x40 }) == "\xE3\x81\x82");
+    TEST_ASSERT(table.decodeAll(std::vector<u8>{ 0x41 }) == "A");
+
+    // A byte the table has no entry for is not "decoded to a placeholder".
+    TEST_ASSERT(table.isFullyMapped(std::vector<u8>{ 0x80, 0x41 }));
+    TEST_ASSERT(!table.isFullyMapped(std::vector<u8>{ 0x90 }));
+
+    // This table is unambiguous, so it can encode as well as decode.
+    TEST_ASSERT(table.canEncode());
+    TEST_ASSERT(table.encodeAll("\xCE\xB1\xCE\xB2").value() == (std::vector<u8>{ 0x80, 0x81 }));
+    TEST_ASSERT(table.encodeAll("A").value() == std::vector<u8>{ 0x41 });
+    TEST_ASSERT(!table.encodeAll("\xE2\x82\xAC").has_value());
+
+    // Bounded decoding reports why it stopped, the same as the algorithmic
+    // decoders do.
+    const auto limited = table.decodeBounded(std::vector<u8>{ 0x80, 0x81 }, 1);
+    TEST_ASSERT(limited.stopReason == pl::core::DecodeStop::CodepointLimit);
+    TEST_ASSERT(limited.bytesConsumed == 1);
+
+    const auto unmapped = table.decodeBounded(std::vector<u8>{ 0x90 });
+    TEST_ASSERT(unmapped.stopReason == pl::core::DecodeStop::MalformedBytes);
+
+    TEST_SUCCESS();
+};
+
+TEST_SEQUENCE("EncodingFileAmbiguity") {
+    // Two byte sequences that decode to the same value cannot be encoded back
+    // unambiguously.
+    const hex::EncodingFile duplicateTarget(hex::EncodingFile::Type::Thingy, std::string(
+        "80=\xCE\xB1\n"
+        "81=\xCE\xB1\n"));
+    TEST_ASSERT(duplicateTarget.valid());
+    TEST_ASSERT(!duplicateTarget.canEncode());
+    TEST_ASSERT(!duplicateTarget.encodeAll("\xCE\xB1").has_value());
+
+    // A code is uniquely decodable when no encoded value is a prefix of
+    // another. This table is not prefix-free.
+    const hex::EncodingFile prefixed(hex::EncodingFile::Type::Thingy, std::string(
+        "80=\xCE\xB1\xCE\xB2\n"
+        "81=\xCE\xB1\n"));
+    TEST_ASSERT(prefixed.valid());
+    TEST_ASSERT(!prefixed.canEncode());
+
+    TEST_SUCCESS();
+};
+
+TEST_SEQUENCE("SingleCharacterAndControlCodes") {
+    TEST_ASSERT(hex::isSingleCharacter("A"));
+    TEST_ASSERT(hex::isSingleCharacter("\xC3\xA9"));
+    TEST_ASSERT(hex::isSingleCharacter("\xF0\x9F\x98\x80"));
+    TEST_ASSERT(!hex::isSingleCharacter(""));
+    TEST_ASSERT(!hex::isSingleCharacter("ab"));
+    TEST_ASSERT(!hex::isSingleCharacter("\xC3"));
+
+    // A name like "NUL" is not a character that can be drawn.
+    TEST_ASSERT(!hex::isSingleCharacter("NUL"));
+
+    TEST_ASSERT(hex::isControlCode(0x00));
+    TEST_ASSERT(hex::isControlCode(0x1F));
+    TEST_ASSERT(hex::isControlCode(0x7F));
+    TEST_ASSERT(!hex::isControlCode(0x20));
+    TEST_ASSERT(!hex::isControlCode(0x41));
+    TEST_ASSERT(!hex::isControlCode(0x80));
+
+    TEST_SUCCESS();
+};
+
+TEST_SEQUENCE("EncodingLookupRejectsPathTraversal") {
+    // getEncodingByName() takes a name straight from a pattern script, which
+    // never goes through the sandbox prompt hex::file::open() requires. Only
+    // the configured encodings directory is in reach.
+    TEST_ASSERT(hex::getEncodingByName("../../../etc/passwd") == nullptr);
+    TEST_ASSERT(hex::getEncodingByName("/etc/passwd") == nullptr);
+    TEST_ASSERT(hex::getEncodingByName("") == nullptr);
+
+    // A name with no table behind it is not an error either, just absent.
+    TEST_ASSERT(hex::getEncodingByName("no_such_encoding_exists") == nullptr);
+
+    TEST_SUCCESS();
+};
+
+TEST_SEQUENCE("CodepageFromEncoding") {
+    // The default ASCII codepage draws the printable range and nothing else.
+    const auto &ascii = hex::Codepage::ascii();
+    TEST_ASSERT(ascii.getName().empty());
+    TEST_ASSERT(ascii['A'] == "A");
+    TEST_ASSERT(ascii[' '] == " ");
+    TEST_ASSERT(ascii[0x00].empty());
+    TEST_ASSERT(ascii[0x7F].empty());
+    TEST_ASSERT(ascii[0x80].empty());
+
+    // A single byte table becomes a codepage: the mapped bytes gain characters,
+    // the rest stay empty.
+    const hex::EncodingFile singleByte(hex::EncodingFile::Type::Thingy, std::string(
+        "80=\xCE\xB1\n"
+        "81=\xCE\xB2\n"));
+    const auto codepage = hex::Codepage::fromEncoding(singleByte);
+    TEST_ASSERT(codepage.has_value());
+    TEST_ASSERT((*codepage)[0x80] == "\xCE\xB1");
+    TEST_ASSERT((*codepage)[0x81] == "\xCE\xB2");
+    TEST_ASSERT((*codepage)[0x82].empty());
+
+    // A table with a multi byte sequence cannot give every byte its own cell.
+    const hex::EncodingFile multiByte(hex::EncodingFile::Type::Thingy, std::string(
+        "8140=\xE3\x81\x82\n"));
+    TEST_ASSERT(!hex::Codepage::fromEncoding(multiByte).has_value());
+
+    TEST_SUCCESS();
+};

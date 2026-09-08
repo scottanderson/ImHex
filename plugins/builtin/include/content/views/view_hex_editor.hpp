@@ -106,6 +106,16 @@ namespace hex::plugin::builtin {
         */
         void processPasteBehaviour(const Region &selection);
 
+        /**
+        * Applies the character set declared for a provider's text, if one was declared.
+        */
+        void applyEncoding(prv::Provider *provider);
+
+        /**
+        * Clears the declared character set if `code` has no `encoding` pragma in it.
+        */
+        void resetEncodingIfNotDeclared(const std::string &code);
+
         ui::HexEditor m_hexEditor;
 
         bool m_shouldOpenPopup = false;
@@ -116,6 +126,10 @@ namespace hex::plugin::builtin {
 
         PerProvider<std::optional<u64>> m_selectionStart, m_selectionEnd;
         FileBackedProviderData<std::optional<EncodingFile>> m_customEncodings;
+
+        // Distinct from m_customEncodings above. That is a view the user turns on
+        // and off and saves with the project.
+        PerProvider<std::optional<std::string>> m_declaredEncodingNames;
 
         PerProvider<std::map<u64, color_t>> m_foregroundHighlights, m_backgroundHighlights;
         PerProvider<std::set<Region>> m_hoverHighlights;

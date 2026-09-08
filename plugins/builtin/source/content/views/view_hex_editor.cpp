@@ -10,6 +10,7 @@
 #include <content/differing_byte_searcher.hpp>
 
 #include <hex/api/events/events_provider.hpp>
+#include <hex/api/events/events_interaction.hpp>
 #include <hex/api/events/requests_interaction.hpp>
 #include <hex/api/events/requests_gui.hpp>
 
@@ -18,9 +19,12 @@
 #include <hex/helpers/default_paths.hpp>
 
 #include <hex/providers/buffered_reader.hpp>
+
 #include <toasts/toast_notification.hpp>
 
 #include <wolv/math_eval/math_evaluator.hpp>
+
+#include <pl/pattern_language.hpp>
 
 #include <content/providers/view_provider.hpp>
 
@@ -229,6 +233,9 @@ namespace hex::plugin::builtin {
     }
 
     ViewHexEditor::~ViewHexEditor() {
+        RequestChangeEncoding::unsubscribe(this);
+        EventPatternExecuted::unsubscribe(this);
+        EventPatternEditorChanged::unsubscribe(this);
         RequestHexEditorSelectionChange::unsubscribe(this);
         EventProviderChanged::unsubscribe(this);
         EventProviderOpened::unsubscribe(this);
@@ -647,7 +654,105 @@ namespace hex::plugin::builtin {
 
     }
 
+    namespace {
+
+        // Returns the value of `code`'s `encoding` pragma, if it has one. `code`
+        // is the exact source a pattern run just executed, or the editor just
+        // settled on between keystrokes.
+        //
+        // Reads the answer from the source text itself, not a flag set inside
+        // the pragma's own handler. The pattern editor's own syntax-highlighting
+        // pass also fires pragma handlers, on source with no real run to match.
+        std::optional<std::string> declaredEncodingPragmaValue(const std::string &code) {
+            // Lexes the source the same way a real run does, so a commented-out
+            // or otherwise inactive pragma is not mistaken for a live one.
+            // Only lexes, so one instance serves every call. Both callers are
+            // main-thread event handlers.
+            static const pl::PatternLanguage runtime;
+            const auto pragmaValues = runtime.getPragmaValues(code);
+
+            // setDefaultEncoding() (pl::lib::libstd::registerPragmas()) just
+            // overwrites the default on each #pragma encoding it runs, so the
+            // last one in source order wins. A multimap keeps equal keys in
+            // insertion order, so that is the last of the range.
+            const auto [first, last] = pragmaValues.equal_range("encoding");
+            if (first == last)
+                return std::nullopt;
+
+            return std::prev(last)->second;
+        }
+
+    }
+
+    void ViewHexEditor::resetEncodingIfNotDeclared(const std::string &code) {
+        const auto declaredValue = declaredEncodingPragmaValue(code);
+
+        // A pragma naming an encoding nothing can resolve is exactly as undeclared as no pragma.
+        if (declaredValue.has_value() && getEncodingByName(*declaredValue) != nullptr)
+            return;
+
+        auto *provider = ImHexApi::Provider::get();
+        if (provider == nullptr)
+            return;
+
+        auto &encodingName = m_declaredEncodingNames.get(provider);
+        if (!encodingName.has_value())
+            return;
+
+        encodingName.reset();
+        this->applyEncoding(provider);
+    }
+
+    void ViewHexEditor::applyEncoding(prv::Provider *provider) {
+        std::optional<std::string> encodingName;
+        if (provider != nullptr)
+            encodingName = m_declaredEncodingNames.get(provider);
+
+        const EncodingFile *encoding = encodingName.has_value() ? getEncodingByName(*encodingName) : nullptr;
+
+        // The text column reads one character per byte. An encoding that spends
+        // more than one byte on a character, such as Shift-JIS, UTF-8, or an
+        // encoding with an emoji, cannot drive it. The column stays on ASCII.
+        //
+        // The custom encoding column shows these correctly. Its cells are not
+        // tied to one byte each.
+        std::optional<Codepage> codepage;
+        if (encoding != nullptr)
+            codepage = Codepage::fromEncoding(*encoding);
+
+        const bool declared = encodingName.has_value();
+        m_hexEditor.setCodepage(codepage.value_or(Codepage::ascii()), declared);
+        ImHexApi::HexEditor::impl::setCurrentEncodingName(std::move(encodingName));
+    }
+
     void ViewHexEditor::registerEvents() {
+        RequestChangeEncoding::subscribe(this, [this](const std::string &name) {
+            auto *provider = ImHexApi::Provider::get();
+            if (provider == nullptr || getEncodingByName(name) == nullptr)
+                return;
+
+            // Patterns are re-evaluated constantly while one is being edited. This
+            // arrives once per keystroke with the same name in it.
+            auto &encodingName = m_declaredEncodingNames.get(provider);
+            if (encodingName == name)
+                return;
+
+            encodingName = name;
+            this->applyEncoding(provider);
+        });
+
+        // A commented-out pragma fires nothing. Reads the code directly instead
+        // of a flag from the pragma's own handler; see declaredEncodingPragmaValue().
+        EventPatternExecuted::subscribe(this, [this](const std::string &code) {
+            this->resetEncodingIfNotDeclared(code);
+        });
+
+        // The pragma applies on every keystroke via the editor's syntax
+        // highlighter, without needing Run. Clearing it needs the same immediacy.
+        EventPatternEditorChanged::subscribe(this, [this](const std::string &code) {
+            this->resetEncodingIfNotDeclared(code);
+        });
+
         RequestHexEditorSelectionChange::subscribe(this, [this](ImHexApi::HexEditor::ProviderRegion region) {
             auto provider = region.getProvider();
 
@@ -691,6 +796,8 @@ namespace hex::plugin::builtin {
                 m_hexEditor.setSelectionUnchecked(std::nullopt, std::nullopt);
                 m_hexEditor.clearCustomEncoding();
             }
+
+            this->applyEncoding(newProvider);
 
             if (isSelectionValid()) {
                 EventRegionSelected::post(ImHexApi::HexEditor::ProviderRegion{ this->getSelection(), newProvider });

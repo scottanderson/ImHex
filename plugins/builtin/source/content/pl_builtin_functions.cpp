@@ -4,6 +4,7 @@
 
 #include <hex/providers/provider.hpp>
 #include <hex/helpers/http_requests.hpp>
+#include <hex/helpers/encoding_file.hpp>
 #include <hex/trace/stacktrace.hpp>
 
 #include <pl/core/token.hpp>
@@ -12,6 +13,23 @@
 #include <pl/patterns/pattern.hpp>
 
 namespace hex::plugin::builtin {
+
+    namespace {
+
+        // Finds a bundled table by its file name, for example "shiftjis" for
+        // encodings/shiftjis.tbl; getEncodingByName() caches these for the life of
+        // the process, so returning a reference to one is safe. Otherwise treats
+        // `encoding` as raw table content and parses it into `storage`, which the
+        // caller owns - a script calling decode()/encode() with a varying inline
+        // table in a loop must not grow a process-lifetime cache without bound.
+        const EncodingFile& resolveEncoding(const std::string &encoding, std::optional<EncodingFile> &storage) {
+            if (const auto *knownEncoding = getEncodingByName(encoding); knownEncoding != nullptr)
+                return *knownEncoding;
+
+            return storage.emplace(EncodingFile::Type::Thingy, encoding);
+        }
+
+    }
 
     void registerPatternLanguageFunctions() {
         using namespace pl::core;
@@ -77,6 +95,40 @@ namespace hex::plugin::builtin {
                 const auto mangledString = params[0].toString(false);
 
                 return trace::demangle(mangledString);
+            });
+
+            /* decode(bytes, encoding) */
+            ContentRegistry::PatternLanguage::addFunction(nsHexDec, "decode", FunctionParameterCount::exactly(2), [](Evaluator *, auto params) -> std::optional<Token::Literal> {
+                const auto bytes = params[0].toBytes();
+                const auto encoding = params[1].toString(false);
+
+                std::optional<EncodingFile> storage;
+                const auto &encodingFile = resolveEncoding(encoding, storage);
+
+                // decodeAll() alone would paper over an unmapped byte with a "."
+                // placeholder instead of reporting it, unlike encode() below.
+                if (!encodingFile.isFullyMapped(bytes))
+                    err::E0012.throwError("The given bytes contain a sequence that has no representation in this encoding.");
+
+                return encodingFile.decodeAll(bytes);
+            });
+
+            /* encode(string, encoding) */
+            ContentRegistry::PatternLanguage::addFunction(nsHexDec, "encode", FunctionParameterCount::exactly(2), [](Evaluator *, auto params) -> std::optional<Token::Literal> {
+                const auto string = params[0].toString(false);
+                const auto encoding = params[1].toString(false);
+
+                std::optional<EncodingFile> storage;
+                const auto &encodingFile = resolveEncoding(encoding, storage);
+
+                if (!encodingFile.canEncode())
+                    err::E0012.throwError("This encoding is ambiguous (multiple byte sequences decode to the same value, or one decoded value is a prefix of another) and can therefore not be used to encode data.");
+
+                auto bytes = encodingFile.encodeAll(string);
+                if (!bytes.has_value())
+                    err::E0012.throwError(fmt::format("The string '{}' contains a character sequence that has no representation in this encoding.", string));
+
+                return std::string(bytes->begin(), bytes->end());
             });
         }
 

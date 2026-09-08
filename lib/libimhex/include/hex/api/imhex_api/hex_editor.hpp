@@ -71,6 +71,11 @@ EXPORT_MODULE namespace hex {
 
             void setCurrentSelection(const std::optional<ProviderRegion> &region);
             void setHoveredRegion(const prv::Provider *provider, const Region &region);
+
+            // The Hex Editor calls this when the character set for the current
+            // provider's text changes. The rest of the UI can then read text the
+            // same way the Hex Editor does.
+            void setCurrentEncodingName(std::optional<std::string> name);
         }
 
         /**
@@ -222,6 +227,23 @@ EXPORT_MODULE namespace hex {
          * @return
          */
         const std::optional<Region>& getHoveredRegion(const prv::Provider *provider);
+
+        /**
+         * @brief Gets the name of the character set the current provider's text is read as
+         * @return The encoding's name. Returns std::nullopt if nothing has
+         *         declared one. The data then reads with the defaults: ASCII
+         *         and UTF-8.
+         * @note This differs from the Hex Editor's custom encoding column. That
+         *       column is a view the user turns on and off. It is not a
+         *       statement about what the data contains.
+         */
+        std::optional<std::string> getEncodingName();
+
+        /**
+         * @brief Declares the character set the current provider's text is written in
+         * @param name The encoding's name, e.g. "macintosh" or "shift_jis"
+         */
+        void setEncoding(const std::string &name);
 
     }
 
