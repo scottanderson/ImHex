@@ -194,4 +194,31 @@ namespace hex {
      */
     std::string encodingFileName(std::string_view name);
 
+    /**
+     * @brief What a table's header says about the encoding
+     */
+    struct EncodingHeader {
+        std::string name;
+        std::string description;
+
+        // True when a `-alias` line led here, so this file is only another name for the table.
+        bool isAlias = false;
+
+        // The table the header came from, which a `-alias` line makes a different file. Empty
+        // when a link breaks or loops, and so reaches no table at all.
+        std::fs::path path;
+    };
+
+    /**
+     * @brief Reads the header of a table file, and no more of it
+     *
+     * Every directive comes above the first entry, so this reads only the start of the file. A
+     * table with many thousands of entries costs no more than a small one. Follows a `-alias`
+     * line to the table it links to.
+     *
+     * @param path The table file to read
+     * @return What its header says, with a name made from the file's name when it gives none
+     */
+    EncodingHeader readEncodingHeader(const std::fs::path &path);
+
 }

@@ -8,6 +8,7 @@
 #include <hex/api/achievement_manager.hpp>
 
 #include <content/differing_byte_searcher.hpp>
+#include <content/helpers/popup_encoding_chooser.hpp>
 
 #include <hex/api/events/events_provider.hpp>
 #include <hex/api/events/events_interaction.hpp>
@@ -855,7 +856,7 @@ namespace hex::plugin::builtin {
                     }
                 }
 
-                ui::PopupFileChooser::open(basePaths, paths, std::vector<hex::fs::ItemFilter>{ {"Thingy Table File", "tbl"} }, false,
+                PopupEncodingChooser::open(basePaths, paths, std::vector<hex::fs::ItemFilter>{ {"Thingy Table File", "tbl"} }, false,
                 [this](const auto &path) {
                     auto *provider = ImHexApi::Provider::get();
                     TaskManager::createTask("hex.builtin.task.loading_encoding_file"_unlocalized, ProgressValue::None(), [this, path, provider](auto&) {

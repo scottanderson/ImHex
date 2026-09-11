@@ -155,6 +155,41 @@ namespace hex {
         }
 
         /**
+         * @brief Makes a name for a table that gives itself none, from its file's name
+         */
+        std::string deriveEncodingName(const std::fs::path &path) {
+            auto name = wolv::util::replaceStrings(path.stem().string(), "_", " ");
+
+            if (!name.empty())
+                name[0] = std::toupper(name[0]);
+
+            return name;
+        }
+
+        /**
+         * @brief Reads the lines above a table file's first entry, and no more of it
+         *
+         * Reads a fixed amount of the start of the file. A header is far shorter than that, so
+         * a line the read cuts in half belongs to the entries, which this drops anyway.
+         */
+        std::vector<std::string> readHeaderLines(const std::fs::path &path) {
+            constexpr static size_t HeaderReadSize = 4096;
+
+            auto file = wolv::io::File(path, wolv::io::File::Mode::Read);
+            const auto content = file.readString(HeaderReadSize);
+
+            std::vector<std::string> result;
+            for (const auto &line : wolv::util::splitString(content, "\n")) {
+                if (isEntryLine(line))
+                    break;
+
+                result.push_back(line);
+            }
+
+            return result;
+        }
+
+        /**
          * @brief Checks whether a line is a directive, which only the header holds
          */
         bool isDirectiveLine(std::string_view line) {
@@ -319,13 +354,8 @@ namespace hex {
         }
 
         // A -name line already named the table. Otherwise the file's own name has to do.
-        if (m_name.empty()) {
-            m_name = path.stem().string();
-            m_name = wolv::util::replaceStrings(m_name, "_", " ");
-
-            if (!m_name.empty())
-                m_name[0] = std::toupper(m_name[0]);
-        }
+        if (m_name.empty())
+            m_name = deriveEncodingName(path);
 
         m_valid = true;
     }
@@ -635,6 +665,54 @@ namespace hex {
         // A failed lookup is cached too, so a bad name hits the file system once.
         const auto &result = encodings.emplace(fileName, std::move(encoding)).first->second;
         return result.valid() ? &result : nullptr;
+    }
+
+    EncodingHeader readEncodingHeader(const std::fs::path &path) {
+        std::set<std::string, std::less<>> visited;
+        auto current = path;
+        bool isAlias = false;
+
+        while (true) {
+            EncodingHeader header;
+            header.isAlias = isAlias;
+
+            std::optional<std::string> alias;
+
+            for (const auto &line : readHeaderLines(current)) {
+                if (const auto target = directiveArgument(line, "-alias"); target.has_value() && !alias.has_value())
+                    alias = std::string(*target);
+
+                if (const auto name = directiveArgument(line, "-name"); name.has_value() && header.name.empty())
+                    header.name = *name;
+
+                if (const auto description = directiveArgument(line, "-description"); description.has_value() && header.description.empty())
+                    header.description = *description;
+            }
+
+            // A table with a -alias line holds nothing else, so the table it links to answers.
+            if (!alias.has_value()) {
+                if (header.name.empty())
+                    header.name = deriveEncodingName(path);
+
+                header.path = current;
+                return header;
+            }
+
+            // A link that breaks or loops reaches no table, so it keeps an empty path.
+            isAlias = true;
+
+            EncodingHeader broken;
+            broken.isAlias = true;
+
+            if (!visited.emplace(*alias).second)
+                return broken;
+
+            const auto next = findEncodingFile(*alias);
+            if (!next.has_value())
+                return broken;
+
+            current = *next;
+        }
     }
 
 }
