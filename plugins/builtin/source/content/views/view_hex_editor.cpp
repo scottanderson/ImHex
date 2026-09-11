@@ -663,8 +663,7 @@ namespace hex::plugin::builtin {
         if (encoding != nullptr)
             codepage = Codepage::fromEncoding(*encoding);
 
-        const bool declared = encodingName.has_value();
-        m_hexEditor.setCodepage(codepage.value_or(Codepage::ascii()), declared);
+        m_hexEditor.setCodepage(codepage.value_or(Codepage::ascii()));
         ImHexApi::HexEditor::impl::setCurrentEncodingName(std::move(encodingName));
     }
 
