@@ -124,6 +124,8 @@ namespace hex {
      * encodings directory and discards any directory part in `name`. Each table is parsed once
      * and cached for the life of the process.
      *
+     * A name is case-insensitive, whatever case the file it names is written in.
+     *
      * @param name The table file's name
      * @return The encoding, or nullptr when no such table exists
      */

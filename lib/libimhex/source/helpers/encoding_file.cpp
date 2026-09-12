@@ -85,6 +85,32 @@ namespace hex {
             return std::nullopt;
         }
 
+        /**
+         * @brief Maps the lower case of every table file's name to that file
+         *
+         * Read once, on the first name that no file answers to by its own spelling. A base path
+         * earlier in the list wins, the same way findEncodingFile() takes the first it finds.
+         */
+        const std::map<std::string, std::fs::path, std::less<>>& encodingFilesByLowerCaseName() {
+            static const auto files = [] {
+                std::map<std::string, std::fs::path, std::less<>> result;
+
+                for (const auto &basePath : paths::Encodings.read()) {
+                    std::error_code error;
+                    for (const auto &entry : std::fs::directory_iterator(basePath, error)) {
+                        if (entry.path().extension() != ".tbl")
+                            continue;
+
+                        result.emplace(toLower(entry.path().stem().string()), entry.path());
+                    }
+                }
+
+                return result;
+            }();
+
+            return files;
+        }
+
     }
 
     namespace impl {
@@ -380,16 +406,22 @@ namespace hex {
 
         std::scoped_lock lock(mutex);
 
-        if (const auto entry = encodings.find(name); entry != encodings.end())
-            return entry->second.valid() ? &entry->second : nullptr;
-
-        // An encoding name is conventionally case-insensitive.
+        // An encoding name is conventionally case-insensitive, so one entry serves every case.
         const auto lowerCaseName = toLower(name);
+
+        if (const auto entry = encodings.find(lowerCaseName); entry != encodings.end())
+            return entry->second.valid() ? &entry->second : nullptr;
 
         auto path = findEncodingFile(name);
 
-        if (!path.has_value()) {
+        if (!path.has_value())
             path = findEncodingFile(lowerCaseName);
+
+        // A file named in any other case answers too, which costs one read of the directory.
+        if (!path.has_value()) {
+            const auto &files = encodingFilesByLowerCaseName();
+            if (const auto file = files.find(lowerCaseName); file != files.end())
+                path = file->second;
         }
 
         EncodingFile encoding;
@@ -397,7 +429,7 @@ namespace hex {
             encoding = EncodingFile(EncodingFile::Type::Thingy, *path);
 
         // A failed lookup is cached too, so a bad name hits the file system once.
-        const auto &result = encodings.emplace(name, std::move(encoding)).first->second;
+        const auto &result = encodings.emplace(lowerCaseName, std::move(encoding)).first->second;
         return result.valid() ? &result : nullptr;
     }
 
