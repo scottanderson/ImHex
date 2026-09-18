@@ -38,6 +38,7 @@ set(AVAILABLE_TESTS
         EscapeCodepoints
         EncodingFileTable
         EncodingFileIncludes
+        EncodingFileIncludeContext
         EncodingFileAliases
         EncodingFileMetadata
         EncodingFileAmbiguity
