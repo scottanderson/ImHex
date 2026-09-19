@@ -74,8 +74,10 @@ endif ()
 
 add_executable(${PROJECT_NAME}
         source/common.cpp
+        source/decoded_string.cpp
         source/encoding.cpp
         source/encoding_line_cache.cpp
+        source/string_codec.cpp
         source/file.cpp
         source/line_comment.cpp
         source/net.cpp
@@ -87,6 +89,7 @@ add_executable(${PROJECT_NAME}
 
 target_include_directories(${PROJECT_NAME} PRIVATE
         include
+        ${CMAKE_SOURCE_DIR}/plugins/builtin/include
         ${CMAKE_SOURCE_DIR}/plugins/ui/include)
 target_link_libraries(${PROJECT_NAME} PRIVATE libimhex tests_common ${FMT_LIBRARIES})
 
