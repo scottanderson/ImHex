@@ -26,7 +26,11 @@
 #include <fonts/vscode_icons.hpp>
 #include <hex/helpers/default_paths.hpp>
 #include <hex/helpers/encoding_file.hpp>
+#include <hex/helpers/string_codec.hpp>
+#include <hex/helpers/logger.hpp>
 #include <hex/ui/imgui_imhex_extensions.h>
+#include <hex/helpers/unicode.hpp>
+#include <content/helpers/decoded_string.hpp>
 #include <content/helpers/popup_encoding_chooser.hpp>
 
 namespace hex::plugin::builtin {
