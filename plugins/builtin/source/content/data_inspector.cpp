@@ -26,6 +26,7 @@
 #include <hex/helpers/unicode.hpp>
 #include <popups/popup_file_chooser.hpp>
 #include <content/helpers/decoded_string.hpp>
+#include <content/helpers/popup_encoding_chooser.hpp>
 
 namespace hex::plugin::builtin {
 
@@ -766,7 +767,7 @@ namespace hex::plugin::builtin {
                             }
                         }
 
-                        ui::PopupFileChooser::open(basePaths, paths, std::vector<fs::ItemFilter>{ {"Thingy Table File", "tbl"} }, false, [encodingFilePtr](const auto &path) {
+                        PopupEncodingChooser::open(basePaths, paths, std::vector<fs::ItemFilter>{ {"Thingy Table File", "tbl"} }, false, [encodingFilePtr](const auto &path) {
                             *encodingFilePtr = EncodingFile(EncodingFile::Type::Thingy, path);
                         });
                     }
